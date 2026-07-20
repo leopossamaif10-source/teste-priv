@@ -3447,26 +3447,6 @@ svg:not(:root).svg-inline--fa, svg:not(:host).svg-inline--fa {
 
                                                                         <!-- Formulário do comprador -->
                                                                         <div id="customer-form" style="display:flex; flex-direction:column; gap:8px; margin-top:12px;">
-                                                                            <div class="el-input el-input--large">
-                                                                                <div class="el-input__wrapper">
-                                                                                    <input class="el-input__inner" type="text" id="input-name" placeholder="Nome completo" autocomplete="name">
-                                                                                </div>
-                                                                            </div>
-                                                                            <div class="el-input el-input--large">
-                                                                                <div class="el-input__wrapper">
-                                                                                    <input class="el-input__inner" type="email" id="input-email" placeholder="E-mail" autocomplete="email">
-                                                                                </div>
-                                                                            </div>
-                                                                            <div class="el-input el-input--large">
-                                                                                <div class="el-input__wrapper">
-                                                                                    <input class="el-input__inner" type="text" id="input-document" placeholder="CPF (somente números)" autocomplete="off" inputmode="numeric">
-                                                                                </div>
-                                                                            </div>
-                                                                            <div class="el-input el-input--large">
-                                                                                <div class="el-input__wrapper">
-                                                                                    <input class="el-input__inner" type="text" id="input-phone" placeholder="Celular com DDD (somente números)" autocomplete="tel" inputmode="numeric">
-                                                                                </div>
-                                                                            </div>
                                                                             <div id="form-error" style="display:none; color:#f56c6c; font-size:13px;"></div>
                                                                             <button class="el-button el-button--gradient is-block btn-payment" type="button" id="btn-gerar-pix" onclick="gerarPix()">
                                                                                 <span><span>Gerar código Pix</span></span>
@@ -3596,6 +3576,7 @@ svg:not(:root).svg-inline--fa, svg:not(:host).svg-inline--fa {
             const username = userData.username
             const valor = Math.round(userData.prices[plan] * 100)
             currentValorCentavos = valor
+            currentPlanLabel = plan
 
             // reseta o estado do modal (form visível, resultado do pix escondido)
             document.getElementById("customer-form").style.display = "flex"
@@ -3614,40 +3595,19 @@ svg:not(:root).svg-inline--fa, svg:not(:host).svg-inline--fa {
             wc.setAttribute('show-dialog', true)
         }
 
-        // Gerar cobrança PIX com os dados reais do comprador
+        // Gerar cobrança PIX via NexusPag
+        let currentPlanLabel = ''
         async function gerarPix() {
             const errorBox = document.getElementById("form-error")
             errorBox.style.display = "none"
-
-            const name = document.getElementById("input-name").value.trim()
-            const email = document.getElementById("input-email").value.trim()
-            const document_ = document.getElementById("input-document").value.replace(/\D/g, "")
-            const phone = document.getElementById("input-phone").value.replace(/\D/g, "")
-
-            if (!name || !email || !document_ || !phone) {
-                errorBox.textContent = "Preencha todos os campos para gerar o Pix."
-                errorBox.style.display = "block"
-                return
-            }
-            if (document_.length !== 11) {
-                errorBox.textContent = "CPF inválido. Digite os 11 números."
-                errorBox.style.display = "block"
-                return
-            }
 
             const btn = document.getElementById("btn-gerar-pix")
             btn.disabled = true
             btn.querySelector("span span").textContent = "Gerando..."
 
             const payload = {
-                customer: {
-                    name: name,
-                    email: email,
-                    document: document_,
-                    phone_number: phone,
-                    amount: currentValorCentavos
-                },
-                utms: utms
+                amount: (currentValorCentavos / 100).toFixed(2),
+                description: `Assinatura ${currentUserData.name} - ${currentPlanLabel}`.trim()
             }
 
             try {
@@ -3666,10 +3626,11 @@ svg:not(:root).svg-inline--fa, svg:not(:host).svg-inline--fa {
                     return
                 }
 
-                const pixCode = result?.pix?.pix_qr_code || result?.pix_qr_code
-                const hash = result?.hash
+                const pixCode = result.pix_code
+                const qrBase64 = result.qr_code_base64
+                const txid = result.txid
 
-                if (!pixCode || !hash) {
+                if (!pixCode || !txid) {
                     errorBox.textContent = "Não foi possível gerar o Pix. Tente novamente."
                     errorBox.style.display = "block"
                     btn.disabled = false
@@ -3677,22 +3638,22 @@ svg:not(:root).svg-inline--fa, svg:not(:host).svg-inline--fa {
                     return
                 }
 
-                // mostra QR code (gerado a partir do código copia-e-cola) e o código
-                document.getElementById("pix-qr-image").src =
-                    "https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=" + encodeURIComponent(pixCode)
+                // QR code: usa o base64 devolvido pela NexusPag (se vier), senão gera a partir do código
+                document.getElementById("pix-qr-image").src = qrBase64
+                    ? (qrBase64.startsWith('data:') ? qrBase64 : `data:image/png;base64,${qrBase64}`)
+                    : "https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=" + encodeURIComponent(pixCode)
                 document.getElementById("txtCodigoPix").value = pixCode
 
                 document.getElementById("customer-form").style.display = "none"
                 document.getElementById("pix-result").style.display = "block"
 
-                // polling -> quando pago, redireciona
                 if (window._popupPaymentChecker) clearInterval(window._popupPaymentChecker);
 
                 window._popupPaymentChecker = setInterval(async () => {
                     try {
-                        const res = await fetch(`/api/check-status?hash=${hash}`);
+                        const res = await fetch(`/api/check-status?txid=${txid}`);
                         const data = await res.json();
-                        if (data && data.payment_status === 'paid') {
+                        if (data && data.paid) {
                             clearInterval(window._popupPaymentChecker);
                             document.getElementById("pix-status").textContent = "Pagamento aprovado! Redirecionando..."
 
